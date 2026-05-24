@@ -15,39 +15,40 @@ HALF_WIDTH = WIDTH // 2
 HALF_HEIGHT = HEIGHT // 2
 FPS = 60
 
-pygame.display.set_caption("cs: gu - Pigeon Offensive (Top-Down)")
+pygame.display.set_caption("cs: gu - Pigeon Offensive")
 clock = pygame.time.Clock()
-font = pygame.font.SysFont("Arial", 20, bold=True)
+font = pygame.font.SysFont("Arial", 18, bold=True)
 large_font = pygame.font.SysFont("Arial", 40, bold=True)
 
 # Colors
 WHITE = (240, 240, 240)
-BLACK = (10, 10, 10)
+BLACK = (12, 12, 15)
 DARK_GRAY = (35, 35, 40)
-FLOOR_GRAY = (55, 55, 60)
-GRID_LINE = (45, 45, 50)
-RED = (255, 50, 50)
-GREEN = (50, 255, 50)
-BLUE = (50, 100, 255)
-YELLOW = (255, 220, 0)
+FLOOR_GRAY = (50, 50, 55)
+GRID_LINE = (42, 42, 46)
+RED = (255, 60, 60)
+GREEN = (60, 255, 60)
+BLUE = (50, 120, 255)
+YELLOW = (255, 225, 0)
 
-# --- TEXTURE LOADING SYSTEM ---
-TEXTURE_DIR = r"D:\C point\projekt\csgu"
+# --- TEXTURE LOADING SYSTEM (AUTO-LOCAL DETECTION) ---
+# This looks in the exact same folder where your script is running
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 human_texture = None
 pigeon_texture = None
 
 try:
-    human_path = os.path.join(TEXTURE_DIR, "1111.jpg")
-    pigeon_path = os.path.join(TEXTURE_DIR, "2222.jpeg")
+    human_path = os.path.join(SCRIPT_DIR, "1111.jpg")
+    pigeon_path = os.path.join(SCRIPT_DIR, "2222.jpeg")
     
     if os.path.exists(human_path):
-        human_texture = pygame.image.load(human_path).convert_with_alpha()
+        human_texture = pygame.image.load(human_path).convert_alpha()
     if os.path.exists(pigeon_path):
-        pigeon_texture = pygame.image.load(pigeon_path).convert_with_alpha()
+        pigeon_texture = pygame.image.load(pigeon_path).convert_alpha()
 except Exception as e:
-    print(f"Texture load failed, using engine fallbacks. Error: {e}")
+    print(f"Texture load fallback active: {e}")
 
-# PATHWAYS MAP (0 = Path, 1 = Human Block, 2 = Pigeon Block)
+# PATHWAYS MAP (0 = Walkable Corridor, 1 = Human Block, 2 = Pigeon Block)
 MAP = [
     [1,1,1,1,1,1,1,1,2,2,2,2,2,2,2,2],
     [1,0,0,0,0,1,0,0,0,0,2,0,0,0,0,2],
@@ -67,7 +68,7 @@ MAP = [
     [1,1,1,1,1,1,1,1,2,2,2,2,2,2,2,2]
 ]
 MAP_SIZE = len(MAP)
-TILE_SIZE = 85  # Scale of grid segments seen from above
+TILE_SIZE = 90  # Sky view scaling factor
 
 PIGEON_BOTS = ["Cooer_2222", "Feather_2222", "Wing_2222", "Squab_2222"]
 HUMAN_BOTS = ["Soldier_1111", "Marine_1111", "Ranger_1111", "Agent_1111"]
@@ -87,6 +88,26 @@ class KillFeed:
             surface.blit(text, (WIDTH - text.get_width() - 20, 20 + i * 25))
 
 kill_feed = KillFeed()
+
+# --- BALLISTIC RAY INTERCEPT ENGINE ---
+def check_bullet_trajectory(x1, y1, x2, y2):
+    """Traces a line from start to target. Returns (hit_wall, final_x, final_y)"""
+    distance = math.hypot(x2 - x1, y2 - y1)
+    steps = int(distance * 30) + 1  # High precision density scan
+    
+    for i in range(steps):
+        percent = i / steps
+        curr_x = x1 + (x2 - x1) * percent
+        curr_y = y1 + (y2 - y1) * percent
+        
+        # Check map boundaries and solid blocks
+        if 0 <= curr_x < MAP_SIZE and 0 <= curr_y < MAP_SIZE:
+            if MAP[int(curr_y)][int(curr_x)] > 0:
+                return True, curr_x, curr_y
+        else:
+            return True, curr_x, curr_y
+            
+    return False, x2, y2
 
 class Entity:
     def __init__(self, x, y, team, name, is_bot=True):
@@ -129,18 +150,23 @@ class Entity:
         if self.cooldown > 0: self.cooldown -= 1
 
         target = None
-        closest_dist = 12.0
+        closest_dist = 10.0
 
         if player.team != self.team and not player.is_dead:
-            closest_dist = math.hypot(player.x - self.x, player.y - self.y)
-            target = player
+            # Check if bot can actually see you through walls before targeting
+            blocked, _, _ = check_bullet_trajectory(self.x, self.y, player.x, player.y)
+            if not blocked:
+                closest_dist = math.hypot(player.x - self.x, player.y - self.y)
+                target = player
 
         for bot in bots:
             if bot != self and bot.team != self.team and not bot.is_dead:
                 d = math.hypot(bot.x - self.x, bot.y - self.y)
                 if d < closest_dist:
-                    closest_dist = d
-                    target = bot
+                    blocked, _, _ = check_bullet_trajectory(self.x, self.y, bot.x, bot.y)
+                    if not blocked:
+                        closest_dist = d
+                        target = bot
 
         if target:
             self.angle = math.atan2(target.y - self.y, target.x - self.x)
@@ -151,14 +177,12 @@ class Entity:
                 if MAP[int(ny)][int(self.x)] == 0: self.y = ny
             
             if self.cooldown == 0 and random.random() < 0.05:
-                self.cooldown = 35
-                if random.random() < 0.25:
+                self.cooldown = 40
+                # Double verification check for projectile impact lines
+                is_obstructed, fx, fy = check_bullet_trajectory(self.x, self.y, target.x, target.y)
+                shot_tracers.append(((self.x, self.y), (fx, fy), pygame.time.get_ticks() + 80))
+                if not is_obstructed:
                     target.take_damage(12, self.name)
-                    shot_tracers.append(((self.x, self.y), (target.x, target.y), pygame.time.get_ticks() + 80))
-                else:
-                    ex = self.x + math.cos(self.angle) * 4
-                    ey = self.y + math.sin(self.angle) * 4
-                    shot_tracers.append(((self.x, self.y), (ex, ey), pygame.time.get_ticks() + 80))
         else:
             if random.random() < 0.04:
                 self.angle += random.uniform(-1, 1)
@@ -174,9 +198,12 @@ def main():
     input_focus = False
     box_rect = pygame.Rect(WIDTH//2 - 100, HEIGHT//2 - 50, 200, 36)
 
+    # Make mouse cursor normal and visible for aiming
+    pygame.mouse.set_visible(True)
+
     while menu:
         screen.fill(DARK_GRAY)
-        title = large_font.render("cs: gu (Pigeon Offensive - Overhead Mode)", True, WHITE)
+        title = large_font.render("cs: gu (Pigeon Offensive - Tactical Overhead)", True, WHITE)
         screen.blit(title, (WIDTH//2 - title.get_width()//2, HEIGHT//5))
 
         pygame.draw.rect(screen, WHITE if input_focus else BLACK, box_rect, 2)
@@ -215,16 +242,14 @@ def main():
 
     player = Entity(1.5, 1.5, selected_team, username, is_bot=False)
     bots = []
-    shot_tracers = [] # Holds dynamic gun rails
+    shot_tracers = []
     
     for i, name in enumerate(PIGEON_BOTS):
         bots.append(Entity(14.5, 14.5 - i, "Pigeons", name))
     for i, name in enumerate(HUMAN_BOTS):
         bots.append(Entity(14.5 - i, 1.5, "Humans", name))
 
-    pygame.mouse.set_visible(False)
     pygame.event.set_grab(True)
-    
     p_cooldown = 0
 
     while True:
@@ -232,91 +257,103 @@ def main():
             if event.type == pygame.QUIT: pygame.quit(); sys.exit()
             if event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE: pygame.quit(); sys.exit()
 
-        if not player.is_dead:
-            # Mouse rotation changes your top-down vector angle cleanly
-            mx, my = pygame.mouse.get_rel()
-            player.angle += mx * 0.004
+        # --- ADVANCED MOUSE-AIM SECTOR ---
+        mx, my = pygame.mouse.get_pos()
+        # Direct angular tracking relative to screen center point where player is anchored
+        player.angle = math.atan2(my - HALF_HEIGHT, mx - HALF_WIDTH)
 
+        if not player.is_dead:
             keys = pygame.key.get_pressed()
+            mouse_buttons = pygame.mouse.get_pressed()
             move_speed = 0.07
             dx, dy = 0, 0
             
-            if keys[pygame.K_w]: 
+            # Move with W/S or Hold RIGHT MOUSE BUTTON to drive toward cursor position
+            if keys[pygame.K_w] or mouse_buttons[2]: 
                 dx += math.cos(player.angle) * move_speed
                 dy += math.sin(player.angle) * move_speed
             if keys[pygame.K_s]: 
                 dx -= math.cos(player.angle) * move_speed
                 dy -= math.sin(player.angle) * move_speed
+            if keys[pygame.K_a]: 
+                dx += math.cos(player.angle - math.pi/2) * move_speed
+                dy += math.sin(player.angle - math.pi/2) * move_speed
+            if keys[pygame.K_d]: 
+                dx += math.cos(player.angle + math.pi/2) * move_speed
+                dy += math.sin(player.angle + math.pi/2) * move_speed
                 
-            # Grid collision containment boundaries
             if MAP[int(player.y)][int(player.x + dx * 1.4)] == 0: player.x += dx
             if MAP[int(player.y + dy * 1.4)][int(player.x)] == 0: player.y += dy
 
+            # Shooting Engine (Spacebar or LEFT CLICK)
             if p_cooldown > 0: p_cooldown -= 1
-            if keys[pygame.K_SPACE] or pygame.mouse.get_pressed()[0]:
+            if keys[pygame.K_SPACE] or mouse_buttons[0]:
                 if p_cooldown == 0:
                     p_cooldown = 12
                     
+                    # Calculate terminal line range distance vector
+                    max_range_x = player.x + math.cos(player.angle) * 15
+                    max_range_y = player.y + math.sin(player.angle) * 15
+                    
+                    # Intercept geometry layer boundaries first
+                    is_wall_hit, final_bullet_x, final_bullet_y = check_bullet_trajectory(player.x, player.y, max_range_x, max_range_y)
+                    
                     hit_target = None
-                    target_dist = 15.0
+                    closest_hit_dist = math.hypot(final_bullet_x - player.x, final_bullet_y - player.y)
+                    
                     for bot in bots:
                         if bot.team != player.team and not bot.is_dead:
+                            # Verify if target lies within narrow ray radius line segment path
                             bx, by = bot.x - player.x, bot.y - player.y
                             b_dist = math.hypot(bx, by)
-                            b_ang = math.atan2(by, bx)
-                            rel_ang = (b_ang - player.angle + math.pi) % (2 * math.pi) - math.pi
                             
-                            if abs(rel_ang) < 0.20 and b_dist < target_dist:
-                                target_dist = b_dist
-                                hit_target = bot
+                            if b_dist < closest_hit_dist:
+                                b_ang = math.atan2(by, bx)
+                                rel_ang = (b_ang - player.angle + math.pi) % (2 * math.pi) - math.pi
                                 
+                                # Target intercept width bounding verification
+                                if abs(rel_ang) < 0.18:
+                                    closest_hit_dist = b_dist
+                                    hit_target = bot
+                                    
                     if hit_target:
+                        # Recalculate precision impact coordinates on target structure
+                        final_bullet_x, final_bullet_y = hit_target.x, hit_target.y
                         hit_target.take_damage(35, player.name)
-                        shot_tracers.append(((player.x, player.y), (hit_target.x, hit_target.y), pygame.time.get_ticks() + 100))
-                    else:
-                        # Draw missed shot tracer line out into distance
-                        ex = player.x + math.cos(player.angle) * 8
-                        ey = player.y + math.sin(player.angle) * 8
-                        shot_tracers.append(((player.x, player.y), (ex, ey), pygame.time.get_ticks() + 100))
+                        
+                    shot_tracers.append(((player.x, player.y), (final_bullet_x, final_bullet_y), pygame.time.get_ticks() + 100))
 
-        # Update non-playable units
         for bot in bots: bot.update(player, bots, shot_tracers)
         if player.is_dead and pygame.time.get_ticks() - player.death_time > 4000:
             player.respawn()
 
-        # --- TOP DOWN MATRIX SCROLLING VIEW CAMERA ---
-        # The screen camera stays locked on the exact center coordinates of the player model
+        # Camera frame adjustment matrices relative to player coordinates
         cam_offset_x = HALF_WIDTH - player.x * TILE_SIZE
         cam_offset_y = HALF_HEIGHT - player.y * TILE_SIZE
 
-        # Clean background buffer paint
         screen.fill(BLACK)
 
-        # Draw Grid Matrix Layout from Sky Point View
+        # Draw Grid Corridors
         for y in range(MAP_SIZE):
             for x in range(MAP_SIZE):
                 tile_type = MAP[y][x]
                 sx = x * TILE_SIZE + cam_offset_x
                 sy = y * TILE_SIZE + cam_offset_y
                 
-                # Culling optimization (only render tiles visible on physical monitor screen)
                 if -TILE_SIZE < sx < WIDTH and -TILE_SIZE < sy < HEIGHT:
                     if tile_type == 1 and human_texture:
-                        tex_scaled = pygame.transform.scale(human_texture, (TILE_SIZE, TILE_SIZE))
-                        screen.blit(tex_scaled, (sx, sy))
+                        screen.blit(pygame.transform.scale(human_texture, (TILE_SIZE, TILE_SIZE)), (sx, sy))
                     elif tile_type == 2 and pigeon_texture:
-                        tex_scaled = pygame.transform.scale(pigeon_texture, (TILE_SIZE, TILE_SIZE))
-                        screen.blit(tex_scaled, (sx, sy))
+                        screen.blit(pygame.transform.scale(pigeon_texture, (TILE_SIZE, TILE_SIZE)), (sx, sy))
                     elif tile_type == 0:
                         pygame.draw.rect(screen, FLOOR_GRAY, (sx, sy, TILE_SIZE, TILE_SIZE))
                     else:
                         fallback_color = BLUE if tile_type == 1 else WHITE
                         pygame.draw.rect(screen, fallback_color, (sx, sy, TILE_SIZE, TILE_SIZE))
                     
-                    # Tactical structural lines mapping corridors cleanly
                     pygame.draw.rect(screen, GRID_LINE, (sx, sy, TILE_SIZE, TILE_SIZE), 1)
 
-        # Draw Active Gunfire Laser Tracers
+        # Draw Clean Bullet Tracers (Blocked instantly by structural wall nodes)
         now = pygame.time.get_ticks()
         shot_tracers = [t for t in shot_tracers if t[2] > now]
         for start, end, _ in shot_tracers:
@@ -324,49 +361,47 @@ def main():
             line_end = (end[0] * TILE_SIZE + cam_offset_x, end[1] * TILE_SIZE + cam_offset_y)
             pygame.draw.line(screen, YELLOW, line_start, line_end, 3)
 
-        # Draw All Moving Entity Sprites Rotated Overhead
+        # Draw Models (Dynamic Procedural Rendering System if JPEG files are absent)
         render_entities = bots + ([player] if not player.is_dead else [])
         for ent in render_entities:
             ex = ent.x * TILE_SIZE + cam_offset_x
             ey = ent.y * TILE_SIZE + cam_offset_y
             
-            ent_size = int(TILE_SIZE * 0.65)
+            ent_size = int(TILE_SIZE * 0.55)
+            radius = ent_size // 2
+            base_color = BLUE if ent.team == "Humans" else WHITE
             active_tex = human_texture if ent.team == "Humans" else pigeon_texture
             
             if active_tex:
-                # Scale down cleanly, then rotate based on directional orientation vector
                 tex_scaled = pygame.transform.scale(active_tex, (ent_size, ent_size))
-                # Note: Pygame rotates counter-clockwise, so we negate degrees for accurate mouse sync
-                deg_angle = -math.degrees(ent.angle)
-                rotated_tex = pygame.transform.rotate(tex_scaled, deg_angle)
+                rotated_tex = pygame.transform.rotate(tex_scaled, -math.degrees(ent.angle))
                 tex_rect = rotated_tex.get_rect(center=(ex, ey))
                 screen.blit(rotated_tex, tex_rect.topleft)
             else:
-                fallback_color = BLUE if ent.team == "Humans" else WHITE
-                pygame.draw.circle(screen, fallback_color, (int(ex), int(ey)), ent_size // 2)
+                # ADVANCED PROCEDURAL 3D TOKEN MODEL FALLBACK
+                # Draw main structural model body base
+                pygame.draw.circle(screen, base_color, (int(ex), int(ey)), radius)
+                # Draw head layer structure node
+                pygame.draw.circle(screen, DARK_GRAY, (int(ex), int(ey)), int(radius * 0.6))
+                # Draw tactical front weapon barrel component showing angle explicitly
+                barrel_x = ex + math.cos(ent.angle) * radius
+                barrel_y = ey + math.sin(ent.angle) * radius
+                pygame.draw.line(screen, YELLOW if ent == player else BLACK, (ex, ey), (barrel_x, barrel_y), 5)
                 
-            # Aiming Sight Vector line indicators for tactical map readability
-            sight_len = ent_size // 2 + 15
-            lx = ex + math.cos(ent.angle) * sight_len
-            ly = ey + math.sin(ent.angle) * sight_len
-            pygame.draw.line(screen, RED if ent.team != player.team else GREEN, (ex, ey), (lx, ly), 2)
+            # Laser Target Sights Pointer lines
+            sight_x = ex + math.cos(ent.angle) * (radius + 15)
+            sight_y = ey + math.sin(ent.angle) * (radius + 15)
+            pygame.draw.line(screen, GREEN if ent.team == player.team else RED, (ex, ey), (sight_x, sight_y), 2)
 
-            # Identification Header Labels
+            # Health Header Tags
             tag_color = GREEN if ent.team == player.team else RED
-            if ent == player:
-                lbl = font.render(f"YOU [{ent.health}]", True, GREEN)
-            else:
-                lbl = font.render(f"{ent.name} [{ent.health}]", True, tag_color)
-            screen.blit(lbl, (ex - lbl.get_width() // 2, ey - ent_size // 2 - 22))
+            lbl = font.render(f"YOU [{ent.health}]" if ent == player else f"{ent.name} [{ent.health}]", True, tag_color)
+            screen.blit(lbl, (ex - lbl.get_width() // 2, ey - radius - 22))
 
-        # HUD Layer Overlay
-        # Simple laser pointer dots centered on screen overlay
-        if not player.is_dead:
-            pygame.draw.circle(screen, GREEN, (HALF_WIDTH, HALF_HEIGHT), 4)
-
+        # Core Interface Overlays
         hp_color = GREEN if player.health > 40 else RED
         screen.blit(large_font.render(f"HP: {player.health}", True, hp_color), (30, HEIGHT - 70))
-        screen.blit(font.render(f"TEAM: {player.team.upper()}", True, WHITE), (30, HEIGHT - 110))
+        screen.blit(font.render(f"TEAM: {player.team.upper()} (Aim: Mouse | Drive: Right-Click or W)", True, WHITE), (30, HEIGHT - 110))
         
         if player.is_dead:
             screen.blit(large_font.render("WIPED OUT! RESPAWNING...", True, RED), (HALF_WIDTH - 200, HALF_HEIGHT))
