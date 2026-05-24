@@ -4,7 +4,7 @@ import random
 import sys
 import os
 
-# Initialize Pygame
+# 1. Initialize Pygame & Core Core Systems First
 pygame.init()
 pygame.font.init()
 
@@ -31,22 +31,45 @@ GREEN = (60, 255, 60)
 BLUE = (50, 120, 255)
 YELLOW = (255, 225, 0)
 
-# --- TEXTURE LOADING SYSTEM (AUTO-LOCAL DETECTION) ---
-# This looks in the exact same folder where your script is running
+# --- ENGINE TEXTURE GENERATOR & LOADER ---
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-human_texture = None
-pigeon_texture = None
 
+def generate_fallback_surface(text_label, bg_color, text_color):
+    """Creates a distinct text-stamped token texture on the fly if files are missing."""
+    surf = pygame.Surface((120, 120), pygame.SRCALPHA)
+    pygame.draw.circle(surf, bg_color, (60, 60), 55)
+    pygame.draw.circle(surf, DARK_GRAY, (60, 60), 35)
+    
+    # Render the asset stamp identity directly onto the skin center
+    lbl_font = pygame.font.SysFont("Arial", 26, bold=True)
+    txt_surf = lbl_font.render(text_label, True, text_color)
+    surf.blit(txt_surf, (60 - txt_surf.get_width()//2, 60 - txt_surf.get_height()//2))
+    
+    # Integrated direction pointer tip (shows which way the model faces)
+    pygame.draw.polygon(surf, YELLOW, [(105, 52), (120, 60), (105, 68)])
+    return surf
+
+# Load local files OR convert straight into programmatic tokens 
 try:
     human_path = os.path.join(SCRIPT_DIR, "1111.jpg")
-    pigeon_path = os.path.join(SCRIPT_DIR, "2222.jpeg")
-    
     if os.path.exists(human_path):
         human_texture = pygame.image.load(human_path).convert_alpha()
+        is_human_fallback = False
+    else:
+        human_texture = generate_fallback_surface("1111", BLUE, WHITE)
+        is_human_fallback = True
+        
+    pigeon_path = os.path.join(SCRIPT_DIR, "2222.jpeg")
     if os.path.exists(pigeon_path):
         pigeon_texture = pygame.image.load(pigeon_path).convert_alpha()
+        is_pigeon_fallback = False
+    else:
+        pigeon_texture = generate_fallback_surface("2222", WHITE, BLACK)
+        is_pigeon_fallback = True
 except Exception as e:
-    print(f"Texture load fallback active: {e}")
+    human_texture = generate_fallback_surface("1111", BLUE, WHITE)
+    pigeon_texture = generate_fallback_surface("2222", WHITE, BLACK)
+    is_human_fallback = is_pigeon_fallback = True
 
 # PATHWAYS MAP (0 = Walkable Corridor, 1 = Human Block, 2 = Pigeon Block)
 MAP = [
@@ -68,7 +91,7 @@ MAP = [
     [1,1,1,1,1,1,1,1,2,2,2,2,2,2,2,2]
 ]
 MAP_SIZE = len(MAP)
-TILE_SIZE = 90  # Sky view scaling factor
+TILE_SIZE = 90  
 
 PIGEON_BOTS = ["Cooer_2222", "Feather_2222", "Wing_2222", "Squab_2222"]
 HUMAN_BOTS = ["Soldier_1111", "Marine_1111", "Ranger_1111", "Agent_1111"]
@@ -91,16 +114,15 @@ kill_feed = KillFeed()
 
 # --- BALLISTIC RAY INTERCEPT ENGINE ---
 def check_bullet_trajectory(x1, y1, x2, y2):
-    """Traces a line from start to target. Returns (hit_wall, final_x, final_y)"""
+    """Traces a ray from origin to end point. Stops immediately if intersecting solid walls."""
     distance = math.hypot(x2 - x1, y2 - y1)
-    steps = int(distance * 30) + 1  # High precision density scan
+    steps = int(distance * 35) + 1  
     
     for i in range(steps):
         percent = i / steps
         curr_x = x1 + (x2 - x1) * percent
         curr_y = y1 + (y2 - y1) * percent
         
-        # Check map boundaries and solid blocks
         if 0 <= curr_x < MAP_SIZE and 0 <= curr_y < MAP_SIZE:
             if MAP[int(curr_y)][int(curr_x)] > 0:
                 return True, curr_x, curr_y
@@ -153,7 +175,6 @@ class Entity:
         closest_dist = 10.0
 
         if player.team != self.team and not player.is_dead:
-            # Check if bot can actually see you through walls before targeting
             blocked, _, _ = check_bullet_trajectory(self.x, self.y, player.x, player.y)
             if not blocked:
                 closest_dist = math.hypot(player.x - self.x, player.y - self.y)
@@ -178,7 +199,6 @@ class Entity:
             
             if self.cooldown == 0 and random.random() < 0.05:
                 self.cooldown = 40
-                # Double verification check for projectile impact lines
                 is_obstructed, fx, fy = check_bullet_trajectory(self.x, self.y, target.x, target.y)
                 shot_tracers.append(((self.x, self.y), (fx, fy), pygame.time.get_ticks() + 80))
                 if not is_obstructed:
@@ -198,7 +218,6 @@ def main():
     input_focus = False
     box_rect = pygame.Rect(WIDTH//2 - 100, HEIGHT//2 - 50, 200, 36)
 
-    # Make mouse cursor normal and visible for aiming
     pygame.mouse.set_visible(True)
 
     while menu:
@@ -257,9 +276,8 @@ def main():
             if event.type == pygame.QUIT: pygame.quit(); sys.exit()
             if event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE: pygame.quit(); sys.exit()
 
-        # --- ADVANCED MOUSE-AIM SECTOR ---
+        # Look vector calculation relative to character camera point layout
         mx, my = pygame.mouse.get_pos()
-        # Direct angular tracking relative to screen center point where player is anchored
         player.angle = math.atan2(my - HALF_HEIGHT, mx - HALF_WIDTH)
 
         if not player.is_dead:
@@ -268,7 +286,7 @@ def main():
             move_speed = 0.07
             dx, dy = 0, 0
             
-            # Move with W/S or Hold RIGHT MOUSE BUTTON to drive toward cursor position
+            # WASD Steering or Right-Click Steering to run directly towards cursor coordinates
             if keys[pygame.K_w] or mouse_buttons[2]: 
                 dx += math.cos(player.angle) * move_speed
                 dy += math.sin(player.angle) * move_speed
@@ -285,17 +303,16 @@ def main():
             if MAP[int(player.y)][int(player.x + dx * 1.4)] == 0: player.x += dx
             if MAP[int(player.y + dy * 1.4)][int(player.x)] == 0: player.y += dy
 
-            # Shooting Engine (Spacebar or LEFT CLICK)
+            # Weapon firing registry
             if p_cooldown > 0: p_cooldown -= 1
             if keys[pygame.K_SPACE] or mouse_buttons[0]:
                 if p_cooldown == 0:
                     p_cooldown = 12
                     
-                    # Calculate terminal line range distance vector
                     max_range_x = player.x + math.cos(player.angle) * 15
                     max_range_y = player.y + math.sin(player.angle) * 15
                     
-                    # Intercept geometry layer boundaries first
+                    # Core fix: Trace ballistics path across wall boundaries first
                     is_wall_hit, final_bullet_x, final_bullet_y = check_bullet_trajectory(player.x, player.y, max_range_x, max_range_y)
                     
                     hit_target = None
@@ -303,7 +320,6 @@ def main():
                     
                     for bot in bots:
                         if bot.team != player.team and not bot.is_dead:
-                            # Verify if target lies within narrow ray radius line segment path
                             bx, by = bot.x - player.x, bot.y - player.y
                             b_dist = math.hypot(bx, by)
                             
@@ -311,13 +327,11 @@ def main():
                                 b_ang = math.atan2(by, bx)
                                 rel_ang = (b_ang - player.angle + math.pi) % (2 * math.pi) - math.pi
                                 
-                                # Target intercept width bounding verification
                                 if abs(rel_ang) < 0.18:
                                     closest_hit_dist = b_dist
                                     hit_target = bot
                                     
                     if hit_target:
-                        # Recalculate precision impact coordinates on target structure
                         final_bullet_x, final_bullet_y = hit_target.x, hit_target.y
                         hit_target.take_damage(35, player.name)
                         
@@ -327,13 +341,12 @@ def main():
         if player.is_dead and pygame.time.get_ticks() - player.death_time > 4000:
             player.respawn()
 
-        # Camera frame adjustment matrices relative to player coordinates
         cam_offset_x = HALF_WIDTH - player.x * TILE_SIZE
         cam_offset_y = HALF_HEIGHT - player.y * TILE_SIZE
 
         screen.fill(BLACK)
 
-        # Draw Grid Corridors
+        # Draw Grid Layout
         for y in range(MAP_SIZE):
             for x in range(MAP_SIZE):
                 tile_type = MAP[y][x]
@@ -341,19 +354,22 @@ def main():
                 sy = y * TILE_SIZE + cam_offset_y
                 
                 if -TILE_SIZE < sx < WIDTH and -TILE_SIZE < sy < HEIGHT:
-                    if tile_type == 1 and human_texture:
-                        screen.blit(pygame.transform.scale(human_texture, (TILE_SIZE, TILE_SIZE)), (sx, sy))
-                    elif tile_type == 2 and pigeon_texture:
-                        screen.blit(pygame.transform.scale(pigeon_texture, (TILE_SIZE, TILE_SIZE)), (sx, sy))
+                    if tile_type == 1:
+                        if is_human_fallback:
+                            pygame.draw.rect(screen, BLUE, (sx, sy, TILE_SIZE, TILE_SIZE))
+                        else:
+                            screen.blit(pygame.transform.scale(human_texture, (TILE_SIZE, TILE_SIZE)), (sx, sy))
+                    elif tile_type == 2:
+                        if is_pigeon_fallback:
+                            pygame.draw.rect(screen, WHITE, (sx, sy, TILE_SIZE, TILE_SIZE))
+                        else:
+                            screen.blit(pygame.transform.scale(pigeon_texture, (TILE_SIZE, TILE_SIZE)), (sx, sy))
                     elif tile_type == 0:
                         pygame.draw.rect(screen, FLOOR_GRAY, (sx, sy, TILE_SIZE, TILE_SIZE))
-                    else:
-                        fallback_color = BLUE if tile_type == 1 else WHITE
-                        pygame.draw.rect(screen, fallback_color, (sx, sy, TILE_SIZE, TILE_SIZE))
                     
                     pygame.draw.rect(screen, GRID_LINE, (sx, sy, TILE_SIZE, TILE_SIZE), 1)
 
-        # Draw Clean Bullet Tracers (Blocked instantly by structural wall nodes)
+        # Draw Laser Bullet Trails (Terminates on walls instantly)
         now = pygame.time.get_ticks()
         shot_tracers = [t for t in shot_tracers if t[2] > now]
         for start, end, _ in shot_tracers:
@@ -361,47 +377,35 @@ def main():
             line_end = (end[0] * TILE_SIZE + cam_offset_x, end[1] * TILE_SIZE + cam_offset_y)
             pygame.draw.line(screen, YELLOW, line_start, line_end, 3)
 
-        # Draw Models (Dynamic Procedural Rendering System if JPEG files are absent)
+        # Draw 1111 / 2222 Model Entities (Rotates dynamically around look vectors)
         render_entities = bots + ([player] if not player.is_dead else [])
         for ent in render_entities:
             ex = ent.x * TILE_SIZE + cam_offset_x
             ey = ent.y * TILE_SIZE + cam_offset_y
             
-            ent_size = int(TILE_SIZE * 0.55)
-            radius = ent_size // 2
-            base_color = BLUE if ent.team == "Humans" else WHITE
+            ent_size = int(TILE_SIZE * 0.65)
             active_tex = human_texture if ent.team == "Humans" else pigeon_texture
             
-            if active_tex:
-                tex_scaled = pygame.transform.scale(active_tex, (ent_size, ent_size))
-                rotated_tex = pygame.transform.rotate(tex_scaled, -math.degrees(ent.angle))
-                tex_rect = rotated_tex.get_rect(center=(ex, ey))
-                screen.blit(rotated_tex, tex_rect.topleft)
-            else:
-                # ADVANCED PROCEDURAL 3D TOKEN MODEL FALLBACK
-                # Draw main structural model body base
-                pygame.draw.circle(screen, base_color, (int(ex), int(ey)), radius)
-                # Draw head layer structure node
-                pygame.draw.circle(screen, DARK_GRAY, (int(ex), int(ey)), int(radius * 0.6))
-                # Draw tactical front weapon barrel component showing angle explicitly
-                barrel_x = ex + math.cos(ent.angle) * radius
-                barrel_y = ey + math.sin(ent.angle) * radius
-                pygame.draw.line(screen, YELLOW if ent == player else BLACK, (ex, ey), (barrel_x, barrel_y), 5)
+            # Scaled texture transformation with angle mapping
+            tex_scaled = pygame.transform.scale(active_tex, (ent_size, ent_size))
+            rotated_tex = pygame.transform.rotate(tex_scaled, -math.degrees(ent.angle))
+            tex_rect = rotated_tex.get_rect(center=(ex, ey))
+            screen.blit(rotated_tex, tex_rect.topleft)
                 
-            # Laser Target Sights Pointer lines
-            sight_x = ex + math.cos(ent.angle) * (radius + 15)
-            sight_y = ey + math.sin(ent.angle) * (radius + 15)
+            # Laser pointer helper sights
+            sight_x = ex + math.cos(ent.angle) * (ent_size // 2 + 10)
+            sight_y = ey + math.sin(ent.angle) * (ent_size // 2 + 10)
             pygame.draw.line(screen, GREEN if ent.team == player.team else RED, (ex, ey), (sight_x, sight_y), 2)
 
-            # Health Header Tags
+            # Identification Header Labels
             tag_color = GREEN if ent.team == player.team else RED
             lbl = font.render(f"YOU [{ent.health}]" if ent == player else f"{ent.name} [{ent.health}]", True, tag_color)
-            screen.blit(lbl, (ex - lbl.get_width() // 2, ey - radius - 22))
+            screen.blit(lbl, (ex - lbl.get_width() // 2, ey - ent_size // 2 - 22))
 
-        # Core Interface Overlays
+        # Interface Overlay layer
         hp_color = GREEN if player.health > 40 else RED
         screen.blit(large_font.render(f"HP: {player.health}", True, hp_color), (30, HEIGHT - 70))
-        screen.blit(font.render(f"TEAM: {player.team.upper()} (Aim: Mouse | Drive: Right-Click or W)", True, WHITE), (30, HEIGHT - 110))
+        screen.blit(font.render(f"TEAM: {player.team.upper()} (Steer: Mouse Position + Right-Click or WASD)", True, WHITE), (30, HEIGHT - 110))
         
         if player.is_dead:
             screen.blit(large_font.render("WIPED OUT! RESPAWNING...", True, RED), (HALF_WIDTH - 200, HALF_HEIGHT))
